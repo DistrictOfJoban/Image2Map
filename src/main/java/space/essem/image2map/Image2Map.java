@@ -1,7 +1,13 @@
 package space.essem.image2map;
 
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import net.fabricmc.api.ModInitializer;
+import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.HoverEvent;
+import net.minecraft.util.math.BlockPos;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import space.essem.image2map.config.Image2MapConfig;
 import space.essem.image2map.renderer.MapRenderer;
 
@@ -35,20 +41,23 @@ import net.minecraft.util.math.Vec3d;
 import net.fabricmc.fabric.api.command.v1.CommandRegistrationCallback;
 
 public class Image2Map implements ModInitializer {
+    public static final Logger LOGGER = LogManager.getLogger("Image2Map");
     public static Image2MapConfig CONFIG = AutoConfig.register(Image2MapConfig.class, GsonConfigSerializer::new)
             .getConfig();
 
     @Override
     public void onInitialize() {
-        System.out.println("Loading Image2Map...");
+        LOGGER.info("[Image2Map] Loading Image2Map...");
 
         CommandRegistrationCallback.EVENT.register((dispatcher, dedicated) -> {
             dispatcher.register(CommandManager.literal("mapcreate")
                     .requires(source -> source.hasPermissionLevel(CONFIG.minPermLevel))
                     .then(CommandManager.argument("mode", StringArgumentType.word()).suggests(new DitherModeSuggestionProvider())
-                            .then(CommandManager.argument("scalemode", StringArgumentType.word()).suggests(new ScaleModeSuggestionProvider())
+                            .then(CommandManager.argument("base", IntegerArgumentType.integer())
                                     .then(CommandManager.argument("path", StringArgumentType.greedyString())
-                                    .executes(this::createMap)))));
+                                    .executes(this::createMap)))
+                    .then(CommandManager.argument("path", StringArgumentType.greedyString())
+                            .executes(this::createMap))));
         });
     }
 
@@ -64,17 +73,17 @@ public class Image2Map implements ModInitializer {
         
     }
 
-    class ScaleModeSuggestionProvider implements SuggestionProvider<ServerCommandSource> {
-
-        @Override
-        public CompletableFuture<Suggestions> getSuggestions(CommandContext<ServerCommandSource> context,
-                                                             SuggestionsBuilder builder) throws CommandSyntaxException {
-            builder.suggest("resizeImage");
-            builder.suggest("sameAsSource");
-            return builder.buildFuture();
-        }
-
-    }
+//    class ScaleModeSuggestionProvider implements SuggestionProvider<ServerCommandSource> {
+//
+//        @Override
+//        public CompletableFuture<Suggestions> getSuggestions(CommandContext<ServerCommandSource> context,
+//                                                             SuggestionsBuilder builder) throws CommandSyntaxException {
+//            builder.suggest("resizeImage");
+//            builder.suggest("sameAsSource");
+//            return builder.buildFuture();
+//        }
+//
+//    }
 
     public enum DitherMode {
         NONE,
@@ -91,67 +100,74 @@ public class Image2Map implements ModInitializer {
 
     private int createMap(CommandContext<ServerCommandSource> context) throws CommandSyntaxException {
         ServerCommandSource source = context.getSource();
-        Vec3d pos = source.getPosition();
-        PlayerEntity player = source.getPlayer();
+        ServerPlayerEntity player = source.getPlayer();
         DitherMode mode;
         String modeStr = StringArgumentType.getString(context, "mode");
-        String scaleMode = StringArgumentType.getString(context, "scalemode");
+        int base = 0;
+        try {
+            base = IntegerArgumentType.getInteger(context, "base");
+        } catch (Exception ignored) {
+        }
+
         try {
             mode = DitherMode.fromString(modeStr);
         } catch (IllegalArgumentException e) {
             throw new SimpleCommandExceptionType(() -> "Invalid dither mode '" + modeStr + "'").create();
         }
-        String input = StringArgumentType.getString(context, "path");
 
+        String input = StringArgumentType.getString(context, "path");
         source.sendFeedback(new LiteralText("Generating image map..."), false);
 
+        int finalBase = base;
         getImage(input).orTimeout(60, TimeUnit.SECONDS).handleAsync((image, ex) -> {
             if(image == null || ex != null) {
-                if(ex != null) {
-                    source.sendFeedback(new LiteralText("That doesn't seem to be a valid image.").styled(style -> style.withHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, new LiteralText(ex.getMessage() + "A")))), false);
-                } else {
-                    source.sendFeedback(new LiteralText("That doesn't seem to be a valid image."), false);
-                }
+                source.sendFeedback(new LiteralText("That doesn't seem to be a valid image."), false);
                 return 0;
             }
 
-            if(scaleMode.equals("resizeImage")) {
-                ItemStack stack = MapRenderer.render(image, mode, source.getWorld(), pos.x, pos.z, player);
-
-                if (!player.getInventory().insertStack(stack)) {
-                    ItemEntity itemEntity = new ItemEntity(player.world, player.getPos().x, player.getPos().y,
-                            player.getPos().z, stack);
-                    player.world.spawnEntity(itemEntity);
-                }
-            } else {
-                //Literal, may need split img
-                // Round resolution to the nearest 128 so we don't scale the img, then we create a new image, put the old one on top of it
-                BufferedImage newImage = new BufferedImage(getNearest(image.getWidth(), 128), getNearest(image.getHeight(), 128), BufferedImage.TYPE_INT_ARGB);
-                Graphics2D graphics = newImage.createGraphics();
-                graphics.drawImage(image, 0, 0, null);
-                graphics.dispose();
-
-                int portionX = (int)Math.ceil(image.getWidth() / 128.0);
-                int portionY = (int)Math.ceil(image.getHeight() / 128.0);
-                for(int y = 0; y < portionY; y++) {
-                    for(int x = 0; x < portionX; x++) {
-                        BufferedImage croppedImage = newImage.getSubimage(x * 128, y * 128, 128, 128);
-                        ItemStack stack = MapRenderer.render(croppedImage, mode, source.getWorld(), pos.x, pos.z, player);
-                        stack.setCustomName(new LiteralText("X:" + (x+1) + " Y:" + (y+1)));
-                        if (!player.getInventory().insertStack(stack)) {
-                            ItemEntity itemEntity = new ItemEntity(player.world, player.getPos().x, player.getPos().y,
-                                    player.getPos().z, stack);
-                            player.world.spawnEntity(itemEntity);
-                        }
-                    }
-                }
-            }
-
+            giveFinalizedImageToPlayer(player, mode, image, finalBase);
             source.sendFeedback(new LiteralText("Done!"), false);
             return 1;
         });
 
         return 1;
+    }
+
+    private void giveFinalizedImageToPlayer(ServerPlayerEntity player, DitherMode mode, BufferedImage image, int base) {
+        boolean shouldResize = base == 0;
+        ServerWorld world = player.getServerWorld();
+        BlockPos pos = player.getBlockPos();
+        if(shouldResize) {
+            ItemStack stack = MapRenderer.render(image, mode, world, pos.getX(), pos.getZ(), player);
+
+            if (!player.getInventory().insertStack(stack)) {
+                ItemEntity itemEntity = new ItemEntity(world, player.getPos().x, player.getPos().y,
+                        player.getPos().z, stack);
+                player.world.spawnEntity(itemEntity);
+            }
+        } else {
+            //Literal, may need split img
+            // Round resolution to the nearest BASE so we don't scale the img, then we create a new image, put the old one on top of it
+            BufferedImage newImage = new BufferedImage(getNearest(image.getWidth(), base), getNearest(image.getHeight(), base), BufferedImage.TYPE_INT_ARGB);
+            Graphics2D graphics = newImage.createGraphics();
+            graphics.drawImage(image, 0, 0, null);
+            graphics.dispose();
+
+            int portionX = (int)Math.ceil(image.getWidth() / (double)base);
+            int portionY = (int)Math.ceil(image.getHeight() / (double)base);
+            for(int y = 0; y < portionY; y++) {
+                for(int x = 0; x < portionX; x++) {
+                    BufferedImage croppedImage = newImage.getSubimage(x * base, y * base, base, base);
+                    ItemStack stack = MapRenderer.render(croppedImage, mode, world, pos.getX(), pos.getZ(), player);
+//                        stack.setCustomName(new LiteralText("X:" + (x+1) + " Y:" + (y+1)));
+                    if (!player.getInventory().insertStack(stack)) {
+                        ItemEntity itemEntity = new ItemEntity(world, player.getPos().x, player.getPos().y,
+                                player.getPos().z, stack);
+                        player.world.spawnEntity(itemEntity);
+                    }
+                }
+            }
+        }
     }
 
     private int getNearest(double value, int nearest) {
