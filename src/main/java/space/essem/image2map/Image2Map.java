@@ -36,8 +36,6 @@ import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.text.LiteralText;
 import net.minecraft.item.ItemStack;
 import net.minecraft.entity.ItemEntity;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.util.math.Vec3d;
 import net.fabricmc.fabric.api.command.v1.CommandRegistrationCallback;
 
 public class Image2Map implements ModInitializer {
@@ -72,18 +70,6 @@ public class Image2Map implements ModInitializer {
         }
         
     }
-
-//    class ScaleModeSuggestionProvider implements SuggestionProvider<ServerCommandSource> {
-//
-//        @Override
-//        public CompletableFuture<Suggestions> getSuggestions(CommandContext<ServerCommandSource> context,
-//                                                             SuggestionsBuilder builder) throws CommandSyntaxException {
-//            builder.suggest("resizeImage");
-//            builder.suggest("sameAsSource");
-//            return builder.buildFuture();
-//        }
-//
-//    }
 
     public enum DitherMode {
         NONE,
@@ -146,7 +132,7 @@ public class Image2Map implements ModInitializer {
                 player.world.spawnEntity(itemEntity);
             }
         } else {
-            //Literal, may need split img
+            // Literal, may need split img
             // Round resolution to the nearest BASE so we don't scale the img, then we create a new image, put the old one on top of it
             BufferedImage newImage = new BufferedImage(getNearest(image.getWidth(), base), getNearest(image.getHeight(), base), BufferedImage.TYPE_INT_ARGB);
             Graphics2D graphics = newImage.createGraphics();
